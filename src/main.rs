@@ -55,10 +55,34 @@ use dnd::{DragSurface, DragToplevel, DragWorkspace, DropTarget};
 
 const SCROLL_RATE_LIMIT: Duration = Duration::from_millis(200);
 
-#[derive(Clone, Debug, Default, PartialEq, CosmicConfigEntry)]
+#[derive(Clone, Debug, PartialEq, CosmicConfigEntry)]
 struct CosmicWorkspacesConfig {
     show_workspace_number: bool,
     show_workspace_name: bool,
+    /// Center workspaces in the workspace row, instead of aligning to the top/left edge
+    center_workspaces: bool,
+    /// Fill the entire screen with the workspace row background, instead of hugging its content
+    fill_workspace_bar: bool,
+    /// Render window previews translucent over a blurred background
+    frosted_glass: bool,
+    /// Hide the title bar of window previews
+    hide_window_titles: bool,
+    /// Tile windows in a uniform grid group, instead of rows/columns
+    group_tiling: bool,
+}
+
+impl Default for CosmicWorkspacesConfig {
+    fn default() -> Self {
+        Self {
+            show_workspace_number: false,
+            show_workspace_name: false,
+            center_workspaces: false,
+            fill_workspace_bar: true,
+            frosted_glass: false,
+            hide_window_titles: false,
+            group_tiling: false,
+        }
+    }
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -113,6 +137,7 @@ enum Msg {
     OnScroll(wl_output::WlOutput, ScrollDelta),
     TogglePinned(ExtWorkspaceHandleV1),
     EnteredWorkspaceSidebarEntry(ExtWorkspaceHandleV1, bool),
+    EnteredToplevelPreview(ExtForeignToplevelHandleV1, bool),
     DbusInterface(zbus::Result<dbus::Interface>),
     DBus(dbus::Event),
     PanelContainerEntries(Vec<String>),
@@ -157,6 +182,8 @@ struct Toplevel {
     img: Option<backend::CaptureImage>,
     icon: Option<PathBuf>,
     pub pending_move: Option<ExtWorkspaceHandleV1>,
+    /// The cursor is hovering over this toplevel's preview in the overview
+    has_cursor: bool,
 }
 
 #[derive(Clone)]
@@ -296,6 +323,13 @@ impl App {
     fn show(&mut self) -> Task<cosmic::Action<Msg>> {
         if !self.visible {
             self.visible = true;
+            // Stale hover cursor state from a previous opening stick around
+            for workspace in &mut self.workspaces.0 {
+                workspace.has_cursor = false;
+            }
+            for toplevel in &mut self.toplevels.0 {
+                toplevel.has_cursor = false;
+            }
             let outputs = self.outputs.clone();
             let cmd = Task::batch(
                 outputs
@@ -672,6 +706,7 @@ impl Application for App {
                             info,
                             img: None,
                             pending_move: None,
+                            has_cursor: false,
                         });
                         // Close workspaces view if a window spawns while open
                         #[cfg(not(feature = "mock-backend"))]
@@ -1001,6 +1036,11 @@ impl Application for App {
             Msg::EnteredWorkspaceSidebarEntry(workspace_handle, entered) => {
                 if let Some(workspace) = self.workspaces.for_handle_mut(&workspace_handle) {
                     workspace.has_cursor = entered;
+                }
+            }
+            Msg::EnteredToplevelPreview(toplevel_handle, entered) => {
+                if let Some(toplevel) = self.toplevels.for_handle_mut(&toplevel_handle) {
+                    toplevel.has_cursor = entered;
                 }
             }
             Msg::DbusInterface(interface) => {

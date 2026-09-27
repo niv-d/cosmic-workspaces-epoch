@@ -92,12 +92,15 @@ pub(crate) fn layer_surface<'a>(
         .flat_map(|t| &t.info.workspace)
         .collect::<HashSet<_>>();
     let layout = app.conf.workspace_config.workspace_layout;
+    let config = &app.conf.config;
     // track this rectangle
     let sidebar = workspaces_sidebar(
         app.workspaces.for_output(&surface.output),
         &workspaces_with_toplevels,
         &surface.output,
         layout,
+        config.center_workspaces,
+        config.fill_workspace_bar,
         app.drop_target.as_ref(),
         drag_workspace,
         window_id,
@@ -116,6 +119,9 @@ pub(crate) fn layer_surface<'a>(
             })
         }),
         layout,
+        config.group_tiling,
+        config.frosted_glass,
+        config.hide_window_titles,
         drag_toplevel,
         window_id,
         rectangle_track,
@@ -428,6 +434,8 @@ fn workspaces_sidebar<'a>(
     workspaces_with_toplevels: &HashSet<&backend::ExtWorkspaceHandleV1>,
     output: &'a wl_output::WlOutput,
     layout: WorkspaceLayout,
+    center_workspaces: bool,
+    fill_workspace_bar: bool,
     drop_target: Option<&DropTarget>,
     drag_workspace: Option<&'a backend::ExtWorkspaceHandleV1>,
     window_id: window::Id,
@@ -484,52 +492,78 @@ fn workspaces_sidebar<'a>(
             drag_workspace.is_some(),
         ));
     }
-    let (axis, width, height) = match layout {
+    let (axis, outer_width, outer_height) = match layout {
         WorkspaceLayout::Vertical => (Axis::Vertical, Length::Shrink, Length::Fill),
         WorkspaceLayout::Horizontal => (Axis::Horizontal, Length::Fill, Length::Shrink),
+    };
+    // Main axis of the workspace bar
+    let bar_main = if fill_workspace_bar {
+        Length::Fill
+    } else {
+        Length::Shrink
+    };
+    let (bar_width, bar_height) = match layout {
+        WorkspaceLayout::Vertical => (Length::Shrink, bar_main),
+        WorkspaceLayout::Horizontal => (bar_main, Length::Shrink),
     };
     let sidebar_entries_container =
         widget::container(crate::widgets::workspace_bar(sidebar_entries, axis)).padding(8.0);
 
-    widget::container(
-        rectangle_track.container(
-            RectId {
-                id: window_id,
-                toplevel_id: None,
-                widget_id: None,
-                workspaces_id: None,
-            },
-            widget::container(sidebar_entries_container)
-                .width(width)
-                .height(height)
-                .class(cosmic::theme::Container::custom(|theme| {
-                    cosmic::iced::widget::container::Style {
-                        text_color: Some(theme.cosmic().on_bg_color().into()),
-                        icon_color: Some(theme.cosmic().on_bg_color().into()),
-                        background: Some(
-                            iced::Color::from(theme.cosmic().background(theme.transparent).base)
-                                .into(),
-                        ),
-                        border: Border {
-                            radius: theme
-                                .cosmic()
-                                .radius_s()
-                                .map(|x| if x < 4.0 { x } else { x + 8.0 })
-                                .into(),
-                            ..Default::default()
-                        },
-                        shadow: Shadow::default(),
-                        snap: true,
-                    }
-                })),
-        ),
-    )
-    .padding(8)
-    .into()
+    let bar = widget::container(sidebar_entries_container)
+        .width(bar_width)
+        .height(bar_height)
+        .class(cosmic::theme::Container::custom(|theme| {
+            cosmic::iced::widget::container::Style {
+                text_color: Some(theme.cosmic().on_bg_color().into()),
+                icon_color: Some(theme.cosmic().on_bg_color().into()),
+                background: Some(
+                    iced::Color::from(theme.cosmic().background(theme.transparent).base).into(),
+                ),
+                border: Border {
+                    radius: theme
+                        .cosmic()
+                        .radius_s()
+                        .map(|x| if x < 4.0 { x } else { x + 8.0 })
+                        .into(),
+                    ..Default::default()
+                },
+                shadow: Shadow::default(),
+                snap: true,
+            }
+        }));
+    let bar = if center_workspaces {
+        match layout {
+            WorkspaceLayout::Vertical => bar.align_y(Alignment::Center),
+            WorkspaceLayout::Horizontal => bar.align_x(Alignment::Center),
+        }
+    } else {
+        bar
+    };
+
+    let mut sidebar = widget::container(rectangle_track.container(
+        RectId {
+            id: window_id,
+            toplevel_id: None,
+            widget_id: None,
+            workspaces_id: None,
+        },
+        bar,
+    ))
+    .width(outer_width)
+    .height(outer_height);
+    if center_workspaces {
+        sidebar = match layout {
+            WorkspaceLayout::Vertical => sidebar.align_y(Alignment::Center),
+            WorkspaceLayout::Horizontal => sidebar.align_x(Alignment::Center),
+        };
+    }
+    sidebar.padding(8).into()
 }
 
 fn toplevel_preview(
     toplevel: &Toplevel,
+    hide_window_titles: bool,
+    frosted_glass: bool,
     is_being_dragged: bool,
     window_id: window::Id,
     rectangle_track: &rectangle_tracker::RectangleTracker<RectId>,
@@ -538,48 +572,72 @@ fn toplevel_preview(
         space_xxs, space_s, ..
     } = cosmic::theme::active().cosmic().spacing;
 
-    let label = widget::text::body(toplevel.info.title.clone())
-        .ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1)));
-    let label = if let Some(icon) = &toplevel.icon {
-        row![
-            widget::icon(widget::icon::from_path(icon.clone())).size(24),
-            label
+    // Hovered windows are shown opaque
+    let hovered = toplevel.has_cursor;
+    let mut children: Vec<cosmic::Element<Msg>> = Vec::new();
+    if hide_window_titles {
+        // No title pill; keep the close button anchored to the top right of
+        // the preview
+        let close_row = row![
+            widget::space::horizontal().width(Length::Fill),
+            close_button(Msg::CloseToplevel(toplevel.handle.clone()))
         ]
-        .spacing(4)
+        .align_y(Alignment::Center)
+        .padding([2, 2, 2, 0]);
+        children.push(close_row.into());
     } else {
-        row![label]
-    }
-    .align_y(Alignment::Center);
+        let label = widget::text::body(toplevel.info.title.clone())
+            .ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1)));
+        let label = if let Some(icon) = &toplevel.icon {
+            row![
+                widget::icon(widget::icon::from_path(icon.clone())).size(24),
+                label
+            ]
+            .spacing(4)
+        } else {
+            row![label]
+        }
+        .align_y(Alignment::Center);
 
-    let title = row![
-        // TODO tracker for each of these buttons?
-        // So that they can be blurred individually like the sidebar?
-        widget::button::custom(label)
-            .on_press(Msg::ActivateToplevel(toplevel.handle.clone()))
-            .class(cosmic::theme::Button::Icon)
-            .padding([space_xxs, space_s])
-            .apply(widget::container)
-            .class(cosmic::theme::Container::custom(|theme| {
-                cosmic::iced::widget::container::Style {
-                    background: Some(
-                        iced::Color::from(theme.cosmic().background(false).component.base).into(),
-                    ),
-                    border: Border {
-                        color: theme.cosmic().bg_divider().into(),
-                        width: 1.0,
-                        radius: theme.cosmic().radius_xl().into(),
-                    },
-                    ..Default::default()
-                }
-            }))
-            .apply(widget::container)
-            .width(Length::Fill),
-        close_button(Msg::CloseToplevel(toplevel.handle.clone()))
-    ]
-    .spacing(8)
-    .padding([0, 0, 2, 0])
-    .align_y(Alignment::Center);
-    let alpha = if is_being_dragged { 0.5 } else { 1.0 };
+        let title = row![
+            // TODO tracker for each of these buttons?
+            // So that they can be blurred individually like the sidebar?
+            widget::button::custom(label)
+                .on_press(Msg::ActivateToplevel(toplevel.handle.clone()))
+                .class(cosmic::theme::Button::Icon)
+                .padding([space_xxs, space_s])
+                .apply(widget::container)
+                .class(cosmic::theme::Container::custom(|theme| {
+                    cosmic::iced::widget::container::Style {
+                        background: Some(
+                            iced::Color::from(theme.cosmic().background(false).component.base)
+                                .into(),
+                        ),
+                        border: Border {
+                            color: theme.cosmic().bg_divider().into(),
+                            width: 1.0,
+                            radius: theme.cosmic().radius_xl().into(),
+                        },
+                        ..Default::default()
+                    }
+                }))
+                .apply(widget::container)
+                .width(Length::Fill),
+            close_button(Msg::CloseToplevel(toplevel.handle.clone()))
+        ]
+        .spacing(8)
+        .padding([0, 0, 2, 0])
+        .align_y(Alignment::Center);
+        children.push(title.into());
+    }
+    let alpha = if is_being_dragged {
+        0.5
+    } else if frosted_glass && !hovered {
+        // Blur rectangles are already tracked for the preview, giving a frosted glass effect
+        0.5
+    } else {
+        1.0
+    };
     let content = capture_image(toplevel.img.as_ref(), alpha);
 
     let preview = widget::button::custom(if toplevel.pending_move.is_some() || is_being_dragged {
@@ -603,11 +661,13 @@ fn toplevel_preview(
     )
     .class(cosmic::theme::Button::Image)
     .on_press(Msg::ActivateToplevel(toplevel.handle.clone()));
+    children.push(preview.into());
 
+    let reference_index = children.len() - 1;
     widget::mouse_area(crate::widgets::size_cross_nth(
-        vec![title.into(), preview.into()],
+        children,
         Axis::Vertical,
-        1, // Allocate width to match capture image
+        reference_index, // Allocate width to match capture image
     ))
     .on_middle_press(Msg::CloseToplevel(toplevel.handle.clone()))
     .into()
@@ -615,6 +675,8 @@ fn toplevel_preview(
 
 fn toplevel_previews_entry<'a>(
     toplevel: &'a Toplevel,
+    hide_window_titles: bool,
+    frosted_glass: bool,
     is_being_dragged: bool,
     window_id: window::Id,
     rectangle_track: &rectangle_tracker::RectangleTracker<RectId>,
@@ -622,9 +684,19 @@ fn toplevel_previews_entry<'a>(
     // Dragged window still takes up space until moved, but isn't rendered while drag surface is
     // shown.
     let preview = crate::widgets::visibility_wrapper(
-        toplevel_preview(toplevel, is_being_dragged, window_id, rectangle_track),
+        toplevel_preview(
+            toplevel,
+            hide_window_titles,
+            frosted_glass,
+            is_being_dragged,
+            window_id,
+            rectangle_track,
+        ),
         !is_being_dragged,
     );
+    let preview = widget::mouse_area(preview)
+        .on_enter(Msg::EnteredToplevelPreview(toplevel.handle.clone(), true))
+        .on_exit(Msg::EnteredToplevelPreview(toplevel.handle.clone(), false));
     let toplevel2 = toplevel.clone();
     let track = rectangle_track.clone();
     dnd_source_with_drag_surface(
@@ -632,13 +704,26 @@ fn toplevel_previews_entry<'a>(
         DragSurface::Toplevel(toplevel.handle.clone()),
         None,
         preview.into(),
-        move || toplevel_preview(&toplevel2, true, window_id, &track),
+        move || {
+            toplevel_preview(
+                &toplevel2,
+                hide_window_titles,
+                frosted_glass,
+                true,
+                window_id,
+                &track,
+            )
+        },
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn toplevel_previews<'a>(
     toplevels: impl Iterator<Item = &'a Toplevel>,
     layout: WorkspaceLayout,
+    group_tiling: bool,
+    frosted_glass: bool,
+    hide_window_titles: bool,
     drag_toplevel: Option<&'a backend::ExtForeignToplevelHandleV1>,
     window_id: window::Id,
     rectangle_track: &rectangle_tracker::RectangleTracker<RectId>,
@@ -651,6 +736,8 @@ fn toplevel_previews<'a>(
         .map(|t| {
             toplevel_previews_entry(
                 t,
+                hide_window_titles,
+                frosted_glass,
                 drag_toplevel == Some(&t.handle),
                 window_id,
                 rectangle_track,
@@ -659,7 +746,7 @@ fn toplevel_previews<'a>(
         .collect();
     //row(entries)
     widget::mouse_area(
-        widget::container(crate::widgets::toplevels(entries))
+        widget::container(crate::widgets::toplevels(entries, group_tiling))
             .align_x(Alignment::Center)
             .width(width)
             .height(height)

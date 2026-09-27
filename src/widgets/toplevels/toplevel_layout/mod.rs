@@ -5,6 +5,8 @@ use cosmic::iced::{Length, Rectangle, Size};
 use std::marker::PhantomData;
 
 mod axis_toplevel_layout;
+mod group_toplevel_layout;
+pub(crate) use group_toplevel_layout::GroupToplevelLayout;
 mod row_col_toplevel_layout;
 #[allow(unused_imports)]
 pub(crate) use row_col_toplevel_layout::RowColToplevelLayout;
