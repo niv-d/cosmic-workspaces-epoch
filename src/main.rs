@@ -55,10 +55,34 @@ use dnd::{DragSurface, DragToplevel, DragWorkspace, DropTarget};
 
 const SCROLL_RATE_LIMIT: Duration = Duration::from_millis(200);
 
-#[derive(Clone, Debug, Default, PartialEq, CosmicConfigEntry)]
+#[derive(Clone, Debug, PartialEq, CosmicConfigEntry)]
 struct CosmicWorkspacesConfig {
     show_workspace_number: bool,
     show_workspace_name: bool,
+    /// Center workspaces in the workspace row, instead of aligning to the top/left edge
+    center_workspaces: bool,
+    /// Fill the entire screen with the workspace row background, instead of hugging its content
+    fill_workspace_bar: bool,
+    /// Render window previews translucent over a blurred background
+    frosted_glass: bool,
+    /// Hide the title bar of window previews
+    hide_window_titles: bool,
+    /// Tile windows in a uniform grid group, instead of rows/columns
+    group_tiling: bool,
+}
+
+impl Default for CosmicWorkspacesConfig {
+    fn default() -> Self {
+        Self {
+            show_workspace_number: false,
+            show_workspace_name: false,
+            center_workspaces: false,
+            fill_workspace_bar: true,
+            frosted_glass: false,
+            hide_window_titles: false,
+            group_tiling: false,
+        }
+    }
 }
 
 #[derive(Parser, Debug, Clone)]

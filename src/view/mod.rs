@@ -92,12 +92,15 @@ pub(crate) fn layer_surface<'a>(
         .flat_map(|t| &t.info.workspace)
         .collect::<HashSet<_>>();
     let layout = app.conf.workspace_config.workspace_layout;
+    let config = &app.conf.config;
     // track this rectangle
     let sidebar = workspaces_sidebar(
         app.workspaces.for_output(&surface.output),
         &workspaces_with_toplevels,
         &surface.output,
         layout,
+        config.center_workspaces,
+        config.fill_workspace_bar,
         app.drop_target.as_ref(),
         drag_workspace,
         window_id,
@@ -428,6 +431,8 @@ fn workspaces_sidebar<'a>(
     workspaces_with_toplevels: &HashSet<&backend::ExtWorkspaceHandleV1>,
     output: &'a wl_output::WlOutput,
     layout: WorkspaceLayout,
+    center_workspaces: bool,
+    fill_workspace_bar: bool,
     drop_target: Option<&DropTarget>,
     drag_workspace: Option<&'a backend::ExtWorkspaceHandleV1>,
     window_id: window::Id,
@@ -484,52 +489,78 @@ fn workspaces_sidebar<'a>(
             drag_workspace.is_some(),
         ));
     }
-    let (axis, width, height) = match layout {
+    let (axis, outer_width, outer_height) = match layout {
         WorkspaceLayout::Vertical => (Axis::Vertical, Length::Shrink, Length::Fill),
         WorkspaceLayout::Horizontal => (Axis::Horizontal, Length::Fill, Length::Shrink),
+    };
+    // Main axis of the workspace bar
+    let bar_main = if fill_workspace_bar {
+        Length::Fill
+    } else {
+        Length::Shrink
+    };
+    let (bar_width, bar_height) = match layout {
+        WorkspaceLayout::Vertical => (Length::Shrink, bar_main),
+        WorkspaceLayout::Horizontal => (bar_main, Length::Shrink),
     };
     let sidebar_entries_container =
         widget::container(crate::widgets::workspace_bar(sidebar_entries, axis)).padding(8.0);
 
-    widget::container(
-        rectangle_track.container(
-            RectId {
-                id: window_id,
-                toplevel_id: None,
-                widget_id: None,
-                workspaces_id: None,
-            },
-            widget::container(sidebar_entries_container)
-                .width(width)
-                .height(height)
-                .class(cosmic::theme::Container::custom(|theme| {
-                    cosmic::iced::widget::container::Style {
-                        text_color: Some(theme.cosmic().on_bg_color().into()),
-                        icon_color: Some(theme.cosmic().on_bg_color().into()),
-                        background: Some(
-                            iced::Color::from(theme.cosmic().background(theme.transparent).base)
-                                .into(),
-                        ),
-                        border: Border {
-                            radius: theme
-                                .cosmic()
-                                .radius_s()
-                                .map(|x| if x < 4.0 { x } else { x + 8.0 })
-                                .into(),
-                            ..Default::default()
-                        },
-                        shadow: Shadow::default(),
-                        snap: true,
-                    }
-                })),
-        ),
-    )
-    .padding(8)
-    .into()
+    let bar = widget::container(sidebar_entries_container)
+        .width(bar_width)
+        .height(bar_height)
+        .class(cosmic::theme::Container::custom(|theme| {
+            cosmic::iced::widget::container::Style {
+                text_color: Some(theme.cosmic().on_bg_color().into()),
+                icon_color: Some(theme.cosmic().on_bg_color().into()),
+                background: Some(
+                    iced::Color::from(theme.cosmic().background(theme.transparent).base).into(),
+                ),
+                border: Border {
+                    radius: theme
+                        .cosmic()
+                        .radius_s()
+                        .map(|x| if x < 4.0 { x } else { x + 8.0 })
+                        .into(),
+                    ..Default::default()
+                },
+                shadow: Shadow::default(),
+                snap: true,
+            }
+        }));
+    let bar = if center_workspaces {
+        match layout {
+            WorkspaceLayout::Vertical => bar.align_y(Alignment::Center),
+            WorkspaceLayout::Horizontal => bar.align_x(Alignment::Center),
+        }
+    } else {
+        bar
+    };
+
+    let mut sidebar = widget::container(rectangle_track.container(
+        RectId {
+            id: window_id,
+            toplevel_id: None,
+            widget_id: None,
+            workspaces_id: None,
+        },
+        bar,
+    ))
+    .width(outer_width)
+    .height(outer_height);
+    if center_workspaces {
+        sidebar = match layout {
+            WorkspaceLayout::Vertical => sidebar.align_y(Alignment::Center),
+            WorkspaceLayout::Horizontal => sidebar.align_x(Alignment::Center),
+        };
+    }
+    sidebar.padding(8).into()
 }
 
 fn toplevel_preview(
     toplevel: &Toplevel,
+    hide_window_titles: bool,
+    frosted_glass: bool,
     is_being_dragged: bool,
     window_id: window::Id,
     rectangle_track: &rectangle_tracker::RectangleTracker<RectId>,
