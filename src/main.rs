@@ -323,6 +323,13 @@ impl App {
     fn show(&mut self) -> Task<cosmic::Action<Msg>> {
         if !self.visible {
             self.visible = true;
+            // Stale hover cursor state from a previous opening stick around
+            for workspace in &mut self.workspaces.0 {
+                workspace.has_cursor = false;
+            }
+            for toplevel in &mut self.toplevels.0 {
+                toplevel.has_cursor = false;
+            }
             let outputs = self.outputs.clone();
             let cmd = Task::batch(
                 outputs
