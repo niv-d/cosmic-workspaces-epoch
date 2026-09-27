@@ -178,7 +178,6 @@ mod tests {
         let max = Size::new(1000., 800.);
         let toplevels: Vec<_> = (0..7).map(|_| toplevel(400., 300.)).collect();
         for r in ToplevelLayout::layout(&layout, max, &toplevels) {
-            eprintln!("r: {:?}", r);
             assert!(r.x >= 0. && r.y >= 0.);
             assert!(r.x + r.width <= max.width + 0.001);
             assert!(r.y + r.height <= max.height + 0.001);
