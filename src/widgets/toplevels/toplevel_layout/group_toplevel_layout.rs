@@ -4,13 +4,27 @@ use super::LayoutToplevel;
 use super::axis_toplevel_layout::{AxisPoint, AxisRectangle, AxisSize, AxisToplevelLayout};
 use cosmic::iced::advanced::layout::flex::Axis;
 
-/// Lays out all toplevels as one uniform grid: every window shares a single
-/// scale factor, so the whole group scales up/down together like an app grid.
+/// Lays out all toplevels as one group that resembles the actual workspace
+/// layout, like the GNOME overview:
 ///
-/// Rows are filled in order; the last row is only partially filled if the
-/// window count doesn't divide evenly.
+/// - every window shares a single scale factor, so the whole group scales
+///   up/down together and windows keep their relative sizes
+/// - windows are packed edge-to-edge in rows, filling the whole available
+///   area, instead of being arranged in a uniform grid
+///
+/// The scale factor is found via bisection so the packed group fits both
+/// axes and uses as much of the area as possible. Windows are never scaled
+/// up past their preferred size.
 pub(crate) struct GroupToplevelLayout {
     spacing: f32,
+}
+
+#[derive(Default)]
+struct PackedRow {
+    start: usize,
+    count: usize,
+    extent_main: f32,
+    extent_cross: f32,
 }
 
 impl GroupToplevelLayout {
@@ -20,38 +34,82 @@ impl GroupToplevelLayout {
         }
     }
 
-    /// Single scale factor for the whole grid: fit rows in the main axis,
-    /// rows in the cross axis, never upscale past preferred size.
-    fn scale_factor(
+    /// Scale cap: never scale a window up past its preferred size, and keep
+    /// each window at most as wide as the available area.
+    fn scale_upper_bound(
         &self,
-        cols: usize,
-        rows: usize,
         max_limit: AxisSize,
         toplevels: &[LayoutToplevel<'_, AxisSize>],
     ) -> f32 {
-        let row_totals: Vec<f32> = (0..rows)
-            .map(|row| {
-                toplevels[row * cols..(row * cols + cols).min(toplevels.len())]
-                    .iter()
-                    .map(|t| t.preferred_size.main)
-                    .sum::<f32>()
-            })
-            .collect();
-        let max_row_total = row_totals
+        let max_main = toplevels
             .iter()
-            .fold(f32::NEG_INFINITY, |a, &b| a.max(b))
-            .max(1.0);
-        let max_cross = toplevels
-            .iter()
-            .map(|t| t.preferred_size.cross)
+            .map(|t| t.preferred_size.main)
             .fold(1.0_f32, f32::max);
+        (max_limit.main / max_main).min(1.).max(0.)
+    }
 
-        let total_main_spacing = self.spacing * (cols - 1) as f32;
-        let total_cross_spacing = self.spacing * (rows - 1) as f32;
-        let scale_main = (max_limit.main - total_main_spacing) / max_row_total;
-        // Cross must fit the tallest cell in every row
-        let scale_cross = (max_limit.cross - total_cross_spacing) / (max_cross * rows as f32);
-        scale_main.min(scale_cross).min(1.)
+    /// Pack windows at the given scale into rows that fit `max_limit.main`,
+    /// returning the packed group's cross-axis size and the rows.
+    fn packed_rows(
+        &self,
+        scale: f32,
+        max_limit: AxisSize,
+        toplevels: &[LayoutToplevel<'_, AxisSize>],
+    ) -> (f32, Vec<PackedRow>) {
+        let mut rows: Vec<PackedRow> = Vec::new();
+        let mut cur = PackedRow::default();
+        for (i, t) in toplevels.iter().enumerate() {
+            let main = (t.preferred_size.main * scale).max(0.);
+            let cross = (t.preferred_size.cross * scale).max(0.);
+            let needs_new_row =
+                cur.count > 0 && cur.extent_main + self.spacing + main > max_limit.main + 0.001;
+            if needs_new_row {
+                let full = std::mem::take(&mut cur);
+                rows.push(full);
+            }
+            cur.extent_main = if cur.count > 0 {
+                cur.extent_main + self.spacing + main
+            } else {
+                main
+            };
+            cur.extent_cross = cur.extent_cross.max(cross);
+            if cur.count == 0 {
+                cur.start = i;
+                cur.count = 0;
+            }
+            cur.count += 1;
+        }
+        if cur.count > 0 {
+            rows.push(cur);
+        }
+
+        let total_cross: f32 = rows.iter().map(|r| r.extent_cross).sum::<f32>()
+            + self.spacing * (rows.len() as i32 - 1).max(0) as f32;
+        (total_cross, rows)
+    }
+
+    /// Largest scale factor that still fits in the available area
+    fn fitting_scale(
+        &self,
+        max_limit: AxisSize,
+        toplevels: &[LayoutToplevel<'_, AxisSize>],
+    ) -> f32 {
+        let s_max = self.scale_upper_bound(max_limit, toplevels);
+        if (self.packed_rows(s_max, max_limit, toplevels).0) <= max_limit.cross + 0.001 {
+            return s_max;
+        }
+        // Bisection for the largest fitting scale
+        let mut lo = 0.0f32;
+        let mut hi = s_max;
+        for _ in 0..32 {
+            let mid = (lo + hi) / 2.;
+            if self.packed_rows(mid, max_limit, toplevels).0 <= max_limit.cross + 0.001 {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        lo
     }
 }
 
@@ -76,72 +134,33 @@ impl AxisToplevelLayout for GroupToplevelLayout {
             return Vec::new().into_iter();
         }
 
-        // Choose the column count that maximizes the common scale factor.
-        let mut cols = 1usize;
-        let mut best_scale = f32::NEG_INFINITY;
-        for candidate_cols in 1..=toplevels.len() {
-            let candidate_rows = toplevels.len().div_ceil(candidate_cols);
-            let candidate_scale =
-                self.scale_factor(candidate_cols, candidate_rows, max_limit, toplevels);
-            if candidate_scale.total_cmp(&best_scale) == std::cmp::Ordering::Greater {
-                best_scale = candidate_scale;
-                cols = candidate_cols;
-            }
-        }
-        let rows = toplevels.len().div_ceil(cols);
-        let scale_factor = self.scale_factor(cols, rows, max_limit, toplevels);
+        let scale_factor = self.fitting_scale(max_limit, toplevels);
+        let (group_cross, rows) = self.packed_rows(scale_factor, max_limit, toplevels);
 
-        // Scaled windows share one scale factor; each cell is as wide as its
-        // window content, and rows are identical in cross size.
-        let scaled_mains: Vec<f32> = toplevels
-            .iter()
-            .map(|t| t.preferred_size.main * scale_factor)
-            .collect();
-        let scaled_crosses: Vec<f32> = toplevels
-            .iter()
-            .map(|t| t.preferred_size.cross * scale_factor)
-            .collect();
-        let cell_cross = scaled_crosses.iter().fold(0_f32, |a, &b| a.max(b));
-        // Total main-axis content of each row, including spacing
-        let row_mains: Vec<f32> = (0..rows)
-            .map(|row| {
-                let start = row * cols;
-                let count = cols.min(toplevels.len() - start);
-                scaled_mains[start..start + count].iter().sum::<f32>()
-                    + self.spacing * (count - 1) as f32
-            })
-            .collect();
-        let grid_main = row_mains.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
-        let grid_cross = cell_cross * rows as f32 + self.spacing * (rows - 1) as f32;
-        // Center the (possibly smaller) last row and the whole grid
-        let padding_main = ((max_limit.main - grid_main) / 2.).max(0.);
-        let padding_cross = ((max_limit.cross - grid_cross) / 2.).max(0.);
+        // Center the group and center each row of differing width
+        let padding_cross = ((max_limit.cross - group_cross) / 2.).max(0.);
 
-        let children: Vec<AxisRectangle> = toplevels
-            .iter()
-            .enumerate()
-            .map(move |(i, t)| {
-                let row = i / cols;
-                let col = i % cols;
-                let start = row * cols;
-                // Center rows that have fewer windows than the grid width
-                let row_content_main = row_mains[row];
-                let row_padding_main = ((grid_main - row_content_main) / 2.).max(0.);
-                let main_offset: f32 =
-                    scaled_mains[start..i].iter().sum::<f32>() + col as f32 * self.spacing;
-
-                AxisRectangle::new(
+        let mut cur_cross = padding_cross;
+        let mut children = Vec::with_capacity(toplevels.len());
+        for row in rows {
+            let row_padding_main = ((max_limit.main - row.extent_main) / 2.).max(0.);
+            let mut cur_main = row_padding_main;
+            for t in &toplevels[row.start..row.start + row.count] {
+                let main = t.preferred_size.main * scale_factor;
+                let cross = t.preferred_size.cross * scale_factor;
+                // Center windows vertically within the row
+                let vertical_center = (row.extent_cross - cross).max(0.) / 2.;
+                children.push(AxisRectangle::new(
                     AxisPoint {
-                        main: padding_main + row_padding_main + main_offset,
-                        cross: padding_cross + row as f32 * (cell_cross + self.spacing),
+                        main: cur_main,
+                        cross: cur_cross + vertical_center,
                     },
-                    AxisSize {
-                        main: scaled_mains[i],
-                        cross: t.preferred_size.cross * scale_factor,
-                    },
-                )
-            })
-            .collect();
+                    AxisSize { main, cross },
+                ));
+                cur_main += main + self.spacing;
+            }
+            cur_cross += row.extent_cross + self.spacing;
+        }
         children.into_iter()
     }
 }
@@ -194,5 +213,20 @@ mod tests {
         let s1 = rects[1].size();
         assert!((s0.width / 600. - s1.width / 300.).abs() < 1e-3);
         assert!((s0.height / 300. - s1.height / 200.).abs() < 1e-3);
+    }
+
+    #[test]
+    fn fills_area() {
+        let layout = GroupToplevelLayout::new(16);
+        let max = Size::new(1000., 800.);
+        let toplevels: Vec<_> = (0..4).map(|_| toplevel(2000., 1000.)).collect();
+        let rects: Vec<_> = ToplevelLayout::layout(&layout, max, &toplevels).collect();
+        // Optimal packing for four equal 2:1 windows is 2 per row at scale
+        // 0.246: rows must span the full available width and use a good
+        // fraction of the area
+        let right = rects.iter().map(|r| r.x + r.width).fold(0., f32::max);
+        assert!(right > max.width * 0.99);
+        let used = rects.iter().map(|r| r.width * r.height).sum::<f32>();
+        assert!(used / (max.width * max.height) > 0.5);
     }
 }
