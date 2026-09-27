@@ -137,6 +137,7 @@ enum Msg {
     OnScroll(wl_output::WlOutput, ScrollDelta),
     TogglePinned(ExtWorkspaceHandleV1),
     EnteredWorkspaceSidebarEntry(ExtWorkspaceHandleV1, bool),
+    EnteredToplevelPreview(ExtForeignToplevelHandleV1, bool),
     DbusInterface(zbus::Result<dbus::Interface>),
     DBus(dbus::Event),
     PanelContainerEntries(Vec<String>),
@@ -181,6 +182,8 @@ struct Toplevel {
     img: Option<backend::CaptureImage>,
     icon: Option<PathBuf>,
     pub pending_move: Option<ExtWorkspaceHandleV1>,
+    /// The cursor is hovering over this toplevel's preview in the overview
+    has_cursor: bool,
 }
 
 #[derive(Clone)]
@@ -696,6 +699,7 @@ impl Application for App {
                             info,
                             img: None,
                             pending_move: None,
+                            has_cursor: false,
                         });
                         // Close workspaces view if a window spawns while open
                         #[cfg(not(feature = "mock-backend"))]
@@ -1025,6 +1029,11 @@ impl Application for App {
             Msg::EnteredWorkspaceSidebarEntry(workspace_handle, entered) => {
                 if let Some(workspace) = self.workspaces.for_handle_mut(&workspace_handle) {
                     workspace.has_cursor = entered;
+                }
+            }
+            Msg::EnteredToplevelPreview(toplevel_handle, entered) => {
+                if let Some(toplevel) = self.toplevels.for_handle_mut(&toplevel_handle) {
+                    toplevel.has_cursor = entered;
                 }
             }
             Msg::DbusInterface(interface) => {

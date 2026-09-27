@@ -572,6 +572,8 @@ fn toplevel_preview(
         space_xxs, space_s, ..
     } = cosmic::theme::active().cosmic().spacing;
 
+    // Hovered windows are shown opaque
+    let hovered = toplevel.has_cursor;
     let mut children: Vec<cosmic::Element<Msg>> = Vec::new();
     if hide_window_titles {
         // No title pill; keep the close button anchored to the top right of
@@ -630,7 +632,7 @@ fn toplevel_preview(
     }
     let alpha = if is_being_dragged {
         0.5
-    } else if frosted_glass {
+    } else if frosted_glass && !hovered {
         // Blur rectangles are already tracked for the preview, giving a frosted glass effect
         0.5
     } else {
@@ -692,6 +694,9 @@ fn toplevel_previews_entry<'a>(
         ),
         !is_being_dragged,
     );
+    let preview = widget::mouse_area(preview)
+        .on_enter(Msg::EnteredToplevelPreview(toplevel.handle.clone(), true))
+        .on_exit(Msg::EnteredToplevelPreview(toplevel.handle.clone(), false));
     let toplevel2 = toplevel.clone();
     let track = rectangle_track.clone();
     dnd_source_with_drag_surface(
