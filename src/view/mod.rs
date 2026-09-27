@@ -573,7 +573,17 @@ fn toplevel_preview(
     } = cosmic::theme::active().cosmic().spacing;
 
     let mut children: Vec<cosmic::Element<Msg>> = Vec::new();
-    if !hide_window_titles {
+    if hide_window_titles {
+        // No title pill; keep the close button anchored to the top right of
+        // the preview
+        let close_row = row![
+            widget::space::horizontal().width(Length::Fill),
+            close_button(Msg::CloseToplevel(toplevel.handle.clone()))
+        ]
+        .align_y(Alignment::Center)
+        .padding([2, 2, 2, 0]);
+        children.push(close_row.into());
+    } else {
         let label = widget::text::body(toplevel.info.title.clone())
             .ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1)));
         let label = if let Some(icon) = &toplevel.icon {
