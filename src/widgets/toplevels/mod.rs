@@ -7,19 +7,52 @@ use cosmic::iced::{Length, Rectangle, Size, Vector};
 use std::marker::PhantomData;
 
 mod toplevel_layout;
+use toplevel_layout::GroupToplevelLayout;
 use toplevel_layout::{LayoutToplevel, ToplevelLayout, TwoRowColToplevelLayout};
 
-pub fn toplevels<Msg>(children: Vec<cosmic::Element<Msg>>) -> Toplevels<Msg> {
-    Toplevels {
+pub fn toplevels<Msg>(children: Vec<cosmic::Element<Msg>>, group_tiling: bool) -> Toplevels<Msg> {
+    let layout = if group_tiling {
         // TODO configurable
-        layout: TwoRowColToplevelLayout::new(Axis::Horizontal, 16),
+        ToplevelsLayout::Group(GroupToplevelLayout::new(16))
+    } else {
+        ToplevelsLayout::TwoRowCol(TwoRowColToplevelLayout::new(Axis::Horizontal, 16))
+    };
+    Toplevels {
+        layout,
         children,
         _msg: PhantomData,
     }
 }
 
+enum ToplevelsLayout {
+    TwoRowCol(TwoRowColToplevelLayout),
+    Group(GroupToplevelLayout),
+}
+
+impl ToplevelLayout for ToplevelsLayout {
+    fn size(&self) -> Size<Length> {
+        match self {
+            ToplevelsLayout::TwoRowCol(layout) => layout.size(),
+            ToplevelsLayout::Group(layout) => layout.size(),
+        }
+    }
+
+    fn layout(
+        &self,
+        max_limit: Size,
+        toplevels: &[LayoutToplevel<'_>],
+    ) -> impl Iterator<Item = Rectangle> {
+        // Box so different inner layouts can share the same trait impl
+        let assigned_rects: Vec<Rectangle> = match self {
+            ToplevelsLayout::TwoRowCol(layout) => layout.layout(max_limit, toplevels).collect(),
+            ToplevelsLayout::Group(layout) => layout.layout(max_limit, toplevels).collect(),
+        };
+        assigned_rects.into_iter()
+    }
+}
+
 pub struct Toplevels<'a, Msg> {
-    layout: TwoRowColToplevelLayout,
+    layout: ToplevelsLayout,
     children: Vec<cosmic::Element<'a, Msg>>,
     _msg: PhantomData<Msg>,
 }
